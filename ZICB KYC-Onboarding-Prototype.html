@@ -1,0 +1,1219 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>ZICB Account Opening System — KYC Prototype</title>
+
+<!--
+  Diagnostic error overlay — registered first, before anything that could
+  fail. If any script below throws (a CDN failing to load, a library bug,
+  an app bug), the error is shown directly on the page instead of leaving
+  a silent blank screen with no clue what happened.
+-->
+<script>
+(function () {
+  var errors = [];
+  function render() {
+    if (!document.body) { document.addEventListener('DOMContentLoaded', render); return; }
+    var box = document.getElementById('__diag_error_box__');
+    if (!box) {
+      box = document.createElement('div');
+      box.id = '__diag_error_box__';
+      box.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:999999;' +
+        'background:#fee2e2;color:#7f1d1d;font-family:ui-monospace,monospace;' +
+        'font-size:13px;line-height:1.5;padding:14px 16px;max-height:60vh;' +
+        'overflow:auto;border-bottom:3px solid #dc2626;white-space:pre-wrap;';
+      document.body.appendChild(box);
+    }
+    box.textContent = 'The page hit ' + errors.length + ' script error(s):\n\n' + errors.join('\n\n---\n\n');
+  }
+  window.addEventListener('error', function (e) {
+    var msg = (e.error && e.error.stack) ? e.error.stack
+      : (e.message + '  (' + (e.filename || 'unknown file') + ':' + e.lineno + ')');
+    errors.push(msg);
+    render();
+  });
+  window.addEventListener('unhandledrejection', function (e) {
+    errors.push('Unhandled promise rejection: ' + ((e.reason && e.reason.stack) || e.reason));
+    render();
+  });
+})();
+</script>
+
+<!-- Tailwind (browser JIT build, so arbitrary/core utility classes both work) -->
+<script src="https://cdn.tailwindcss.com"></script>
+
+<!-- React 18 -->
+<script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+
+<!--
+  Force the lucide-react UMD bundle down its CommonJS branch instead of its
+  raw-browser-global branch. The global-branch in this build looks up the
+  React global under an inconsistent name and is effectively untested for
+  plain <script>-tag usage (virtually everyone consumes this package via a
+  bundler, which always takes the branch below). Shimming require/module/
+  exports makes lucide-react take that same well-tested path here.
+-->
+<script>
+  window.module = { exports: {} };
+  window.exports = window.module.exports;
+  window.require = function (name) {
+    if (name === 'react') return window.React;
+    throw new Error('Unexpected require: ' + name);
+  };
+</script>
+
+<!-- lucide-react icon set (same version used in the original artifact) -->
+<script src="https://unpkg.com/lucide-react@0.383.0/dist/umd/lucide-react.js" crossorigin></script>
+
+<script>
+  // Pull the icons out of the CJS shim, then remove the shim so it doesn't
+  // confuse any other script (like Babel standalone, loaded next) that
+  // also branches on typeof module / typeof exports.
+  window.LucideReact = window.module.exports;
+  delete window.module;
+  delete window.exports;
+  delete window.require;
+</script>
+
+<!-- Babel standalone: lets the browser transpile the JSX below at load time -->
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+<!-- lodash -->
+<script src="https://unpkg.com/lodash@4.17.21/lodash.min.js"></script>
+
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@500&display=swap');
+  body { margin: 0; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+
+<script type="text/plain" id="app-source">
+const { useState, useEffect } = React;
+const _ = window._;
+const {
+  LayoutDashboard, UserPlus, Building2, RefreshCw, ClipboardCheck, BarChart3,
+  CheckCircle2, XCircle, AlertTriangle, ChevronRight, ChevronLeft, Search,
+  Shield, FileText, Clock, User, Users, Upload, X, Plus, Trash2, Bell,
+  ChevronDown, ArrowRight
+} = LucideReact;
+
+
+// ---------------------------------------------------------------------------
+// Reference data (mirrors the business requirements document)
+// ---------------------------------------------------------------------------
+const PROVINCES = {
+  Lusaka: ["Lusaka", "Kafue", "Chongwe", "Luangwa", "Chilanga"],
+  Copperbelt: ["Kitwe", "Ndola", "Chingola", "Mufulira", "Luanshya"],
+  Southern: ["Livingstone", "Choma", "Mazabuka", "Monze"],
+  Central: ["Kabwe", "Kapiri Mposhi", "Mkushi"],
+  Eastern: ["Chipata", "Petauke", "Katete"],
+  Northern: ["Kasama", "Mbala", "Mpika"],
+  Luapula: ["Mansa", "Samfya"],
+  "North-Western": ["Solwezi", "Mwinilunga"],
+  Western: ["Mongu", "Senanga"],
+  Muchinga: ["Chinsali", "Isoka"],
+};
+const CURRENT_ACCOUNTS = ["Easy Kwacha", "Easy Kwacha Lite", "Easy Kwacha Student", "Easy Kwacha Farmer", "Mukula", "Nkwazi Gold", "Staff Current", "Other"];
+const SAVINGS_ACCOUNTS = ["ZICB Savings", "Cool Save", "Staff Savings", "Other"];
+const INCOME_RANGES = ["ZMW 0 - 3,500", "ZMW 3,500 - 12,000", "ZMW 12,000 - 21,000", "ZMW 21,000 - 30,000", "ZMW 30,000+"];
+const ID_TYPES = ["NRC", "Passport", "Driver's License"];
+const NATIONALITIES = ["Zambian", "South African", "Zimbabwean", "Congolese (DRC)", "Tanzanian", "Malawian", "Kenyan", "British", "Other"];
+const PERMIT_TYPES = ["Work Permit", "School Permit", "Spouse Permit", "Investor Permit", "Resident Permit"];
+const BRANCHES = ["Cairo Road", "Manda Hill", "Kitwe Central", "Ndola Main", "Livingstone", "Solwezi"];
+const EMPLOYMENT_TYPES = ["Self Employment", "Employment"];
+const MARITAL_STATUS = ["Single", "Married", "Divorced", "Widowed"];
+const TITLES = ["Mr", "Mrs", "Ms", "Dr", "Prof"];
+const INDUSTRIES = ["Manufacturing", "Agriculture", "Retail & Trade", "Mining", "Construction", "Financial Services", "Transport & Logistics", "ICT", "Other"];
+
+const LITE_PRODUCTS = ["Easy Kwacha Lite", "Easy Kwacha Student", "Cool Save"];
+
+const ROLES = ["Branch Staff", "KYC Initiator", "KYC Checker", "Compliance Officer"];
+
+function cx(...a) { return a.filter(Boolean).join(" "); }
+function genId() { return "APP-" + Math.random().toString(36).slice(2, 8).toUpperCase(); }
+function genCIF() { return "CIF" + Math.floor(1000000 + Math.random() * 8999999); }
+function genAcct() { return "01" + Math.floor(100000000 + Math.random() * 899999999); }
+function today() { return new Date(); }
+function addDays(d, n) { const nd = new Date(d); nd.setDate(nd.getDate() + n); return nd; }
+function fmtDate(d) { if (!d) return "-"; const dt = typeof d === "string" ? new Date(d) : d; return dt.toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" }); }
+
+// ---------------------------------------------------------------------------
+// Mock seed data
+// ---------------------------------------------------------------------------
+const EXISTING_CUSTOMERS = [
+  { cif: "CIF3820194", name: "Chanda Mwansa", nrc: "123456/10/1", branch: "Cairo Road", mobile: "0977123456", incomeRange: "ZMW 12,000 - 21,000", docsValid: true },
+  { cif: "CIF9021873", name: "Bwalya Trading Ltd", nrc: "REG-2019-4471", branch: "Kitwe Central", mobile: "0966552211", incomeRange: "ZMW 30,000+", docsValid: false },
+];
+
+const SEED_APPS = [
+  {
+    id: genId(), kind: "retail", isAdditional: false, branch: "Manda Hill", createdAt: addDays(today(), -4),
+    accountHolderType: "individual", accountCategory: "Savings", accountProduct: "DCM Savings",
+    customer: { title: "Mrs", firstName: "Natasha", lastName: "Phiri", idType: "NRC", idNumber: "221144/11/1", nationality: "Zambian", incomeRange: "ZMW 3,500 - 12,000", province: "Lusaka", district: "Lusaka", houseNumber: "12B", street: "Great East Road" },
+    jointHolders: [], riskRating: "Low", sanctionsResult: "Clear",
+    documents: { selfie: true, idProof: true, proofOfResidence: true, signature: true },
+    status: "Sent to Checker", cifNumber: genCIF(), accountNumber: null,
+    auditLog: [
+      { action: "Application submitted", actor: "Branch Staff · Manda Hill", at: addDays(today(), -4) },
+      { action: "Documents validated, CIF created", actor: "KYC Initiator", at: addDays(today(), -2) },
+    ],
+  },
+  {
+    id: genId(), kind: "retail", isAdditional: false, branch: "Cairo Road", createdAt: addDays(today(), -1),
+    accountHolderType: "individual", accountCategory: "Current", accountProduct: "Nkwazi Gold",
+    customer: { title: "Mr", firstName: "Joseph", lastName: "Banda", idType: "Passport", idNumber: "ZN0091827", nationality: "Zambian", incomeRange: "ZMW 30,000+", province: "Lusaka", district: "Kafue", houseNumber: "4", street: "Independence Ave" },
+    jointHolders: [], riskRating: "High", sanctionsResult: "Clear",
+    documents: { selfie: true, idProof: true, proofOfResidence: true, signature: true, edd: true },
+    status: "Submitted", cifNumber: null, accountNumber: null,
+    auditLog: [{ action: "Application submitted (high risk, EDD attached)", actor: "Branch Staff · Cairo Road", at: addDays(today(), -1) }],
+  },
+  {
+    id: genId(), kind: "corporate", isAdditional: false, branch: "Kitwe Central", createdAt: addDays(today(), -10),
+    company: { name: "Lupiya Fresh Produce Ltd", registrationNumber: "REG-2021-8832", industry: "Agriculture", tpin: "1004455221", province: "Copperbelt", district: "Kitwe" },
+    people: [{ role: "Director", firstName: "Grace", lastName: "Mulenga", idNumber: "331122/33/1", nationality: "Zambian", mobile: "0955001122" }],
+    riskRating: "Medium", sanctionsResult: "Clear",
+    documents: { pacra: true, signingMandate: true, shareholding: true },
+    status: "Active", cifNumber: genCIF(), accountNumber: genAcct(),
+    auditLog: [
+      { action: "Application submitted", actor: "Branch Staff · Kitwe Central", at: addDays(today(), -10) },
+      { action: "CIF created, sent to checker", actor: "KYC Initiator", at: addDays(today(), -8) },
+      { action: "Account approved and activated", actor: "KYC Checker", at: addDays(today(), -7) },
+    ],
+  },
+];
+
+// ---------------------------------------------------------------------------
+// Reusable form controls
+// ---------------------------------------------------------------------------
+function Field({ label, required, children, hint }) {
+  return (
+    <div>
+      <label className="block text-xs font-medium text-slate-500 mb-1">
+        {label}{required && <span className="text-red-500"> *</span>}
+      </label>
+      {children}
+      {hint && <div className="text-[11px] text-slate-400 mt-1">{hint}</div>}
+    </div>
+  );
+}
+const inputCls = "w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-slate-900/10 focus:border-slate-500";
+
+function TextInput({ label, required, value, onChange, type = "text", placeholder, hint }) {
+  return (
+    <Field label={label} required={required} hint={hint}>
+      <input type={type} value={value || ""} placeholder={placeholder} onChange={(e) => onChange(e.target.value)} className={inputCls} />
+    </Field>
+  );
+}
+function SelectInput({ label, required, value, onChange, options, hint }) {
+  return (
+    <Field label={label} required={required} hint={hint}>
+      <select value={value || ""} onChange={(e) => onChange(e.target.value)} className={inputCls}>
+        <option value="">Select...</option>
+        {options.map((o) => (<option key={o} value={o}>{o}</option>))}
+      </select>
+    </Field>
+  );
+}
+function CheckField({ label, checked, onChange }) {
+  return (
+    <label className="flex items-center gap-2 text-sm text-slate-700 cursor-pointer select-none">
+      <input type="checkbox" checked={!!checked} onChange={(e) => onChange(e.target.checked)} className="h-4 w-4 rounded border-slate-300" />
+      {label}
+    </label>
+  );
+}
+function DocToggle({ label, checked, onChange, hint }) {
+  return (
+    <button type="button" onClick={() => onChange(!checked)}
+      className={cx("w-full flex items-center justify-between rounded-md border px-4 py-3 text-left transition",
+        checked ? "border-emerald-300 bg-emerald-50" : "border-slate-300 bg-white hover:border-slate-400")}>
+      <div>
+        <div className="text-sm font-medium text-slate-800">{label}</div>
+        {hint && <div className="text-xs text-slate-400">{hint}</div>}
+      </div>
+      {checked ? <CheckCircle2 className="text-emerald-600 shrink-0" size={20} /> : <Upload className="text-slate-400 shrink-0" size={18} />}
+    </button>
+  );
+}
+function Badge({ status }) {
+  const map = {
+    Draft: "bg-slate-100 text-slate-600",
+    Submitted: "bg-blue-50 text-blue-700",
+    "Submitted (Deferred)": "bg-amber-50 text-amber-700",
+    "Compliance Referral": "bg-red-50 text-red-700",
+    "Sent to Checker": "bg-indigo-50 text-indigo-700",
+    "Returned to Branch": "bg-red-50 text-red-700",
+    "Returned by Checker": "bg-amber-50 text-amber-700",
+    Active: "bg-emerald-50 text-emerald-700",
+    Terminated: "bg-slate-200 text-slate-500",
+  };
+  return <span className={cx("inline-flex items-center rounded-full px-2.5 py-1 text-xs font-medium", map[status] || "bg-slate-100 text-slate-600")}>{status}</span>;
+}
+function RiskBadge({ r }) {
+  if (!r) return <span className="text-xs text-slate-400">-</span>;
+  const map = { Low: "bg-emerald-50 text-emerald-700", Medium: "bg-amber-50 text-amber-700", High: "bg-red-50 text-red-700" };
+  return <span className={cx("inline-flex items-center rounded-full px-2.5 py-1 text-xs font-medium", map[r])}>{r} risk</span>;
+}
+
+// ---------------------------------------------------------------------------
+// Wizard shell
+// ---------------------------------------------------------------------------
+function Wizard({ title, subtitle, steps, initialDraft, onCancel, onDone }) {
+  const [step, setStep] = useState(0);
+  const [draft, setDraft] = useState(initialDraft);
+  const setPath = (path, value) => setDraft((prev) => { const next = _.cloneDeep(prev); _.set(next, path, value); return next; });
+  const cur = steps[step];
+  return (
+    <div className="bg-white rounded-lg border border-slate-200 shadow-sm max-w-4xl mx-auto">
+      <div className="border-b border-slate-200 px-6 py-4 flex items-center justify-between flex-wrap gap-2">
+        <div>
+          <div className="text-xs uppercase tracking-wide text-slate-400 font-mono">Step {step + 1} of {steps.length} · {subtitle}</div>
+          <h2 className="text-lg font-semibold text-slate-900">{cur.title}</h2>
+        </div>
+        <div className="flex items-center gap-1.5 text-xs text-slate-400"><Clock size={14} /> Autosaves every 2 minutes</div>
+      </div>
+      <div className="p-6">{cur.render(draft, setPath, setDraft, { onDone, onCancel, goStep: setStep })}</div>
+      {!cur.hideFooter && (
+        <div className="border-t border-slate-200 px-6 py-4 flex items-center justify-between">
+          <button onClick={() => (step === 0 ? onCancel() : setStep((s) => s - 1))} className="inline-flex items-center gap-1 rounded-md border border-slate-300 px-4 py-2 text-sm font-medium text-slate-600 hover:bg-slate-50">
+            <ChevronLeft size={16} /> {step === 0 ? "Cancel" : "Back"}
+          </button>
+          <div className="flex gap-1.5">
+            {steps.map((s, i) => (<div key={i} className={cx("h-1.5 w-6 rounded-full", i <= step ? "bg-amber-600" : "bg-slate-200")} />))}
+          </div>
+          <button onClick={() => setStep((s) => Math.min(s + 1, steps.length - 1))} className="inline-flex items-center gap-1 rounded-md bg-slate-900 px-4 py-2 text-sm font-medium text-white hover:bg-slate-800">
+            Next <ChevronRight size={16} />
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Retail wizard
+// ---------------------------------------------------------------------------
+function retailSteps(pushToast) {
+  return [
+    {
+      title: "Segment & Account Selection",
+      render: (d, set) => (
+        <div className="space-y-5">
+          <Field label="Account Segment" required>
+            <div className="flex flex-wrap gap-2">
+              {["Retail", "Corporate", "SME", "Government", "NGO / Club / Association"].map((s) => (
+                <button key={s} type="button" onClick={() => set("segment", s)} className={cx("rounded-full px-3 py-1.5 text-xs font-medium border", d.segment === s ? "bg-slate-900 text-white border-slate-900" : "border-slate-300 text-slate-600 hover:border-slate-400")}>{s}</button>
+              ))}
+            </div>
+            {d.segment && d.segment !== "Retail" && <div className="mt-2 text-xs text-amber-600">This segment is handled in the Corporate/Business wizard — dashboard will reflect that segment once linked.</div>}
+          </Field>
+          <div className="grid grid-cols-2 gap-4">
+            <Field label="Account Holder Type" required>
+              <div className="flex gap-2">
+                {["individual", "joint"].map((t) => (
+                  <button key={t} type="button" onClick={() => set("accountHolderType", t)} className={cx("flex-1 rounded-md border px-3 py-2 text-sm capitalize", d.accountHolderType === t ? "border-slate-900 bg-slate-900 text-white" : "border-slate-300 text-slate-600")}>{t}</button>
+                ))}
+              </div>
+            </Field>
+            {d.accountHolderType === "joint" && (
+              <TextInput label="Number of Account Holders" type="number" value={d.numHolders} onChange={(v) => set("numHolders", v)} required />
+            )}
+          </div>
+          <SelectInput label="Industry Sector" required value={d.industrySector} onChange={(v) => set("industrySector", v)} options={["Informal", "Formal"]} hint="For joint accounts, sector is driven by the main purpose of the account." />
+          <Field label="Account Category" required>
+            <div className="flex gap-2">
+              {["Savings", "Current"].map((c) => (
+                <button key={c} type="button" onClick={() => { set("accountCategory", c); set("accountProduct", ""); }} className={cx("flex-1 rounded-md border px-3 py-2 text-sm", d.accountCategory === c ? "border-slate-900 bg-slate-900 text-white" : "border-slate-300 text-slate-600")}>{c}</button>
+              ))}
+            </div>
+          </Field>
+          {d.accountCategory && (
+            <SelectInput label={`${d.accountCategory} Account Product`} required value={d.accountProduct} onChange={(v) => set("accountProduct", v)} options={d.accountCategory === "Savings" ? SAVINGS_ACCOUNTS : CURRENT_ACCOUNTS} />
+          )}
+          <Field label="Other Products">
+            <div className="flex flex-wrap gap-4 pt-1">
+              {["Debit Card", "Smart Pay", "Internet Banking"].map((p) => (
+                <CheckField key={p} label={p} checked={(d.products || []).includes(p)} onChange={(c) => set("products", c ? [...(d.products || []), p] : (d.products || []).filter((x) => x !== p))} />
+              ))}
+            </div>
+          </Field>
+        </div>
+      ),
+    },
+    {
+      title: "Customer Details",
+      render: (d, set) => (
+        <div className="space-y-6">
+          <div className="grid grid-cols-3 gap-4">
+            <SelectInput label="Title" required value={d.customer?.title} onChange={(v) => set("customer.title", v)} options={TITLES} />
+            <TextInput label="First Name" required value={d.customer?.firstName} onChange={(v) => set("customer.firstName", v)} />
+            <TextInput label="Other Name(s)" value={d.customer?.otherNames} onChange={(v) => set("customer.otherNames", v)} />
+            <TextInput label="Last Name" required value={d.customer?.lastName} onChange={(v) => set("customer.lastName", v)} />
+            <SelectInput label="Marital Status" required value={d.customer?.maritalStatus} onChange={(v) => set("customer.maritalStatus", v)} options={MARITAL_STATUS} />
+            <TextInput label="Date of Birth" required type="date" value={d.customer?.dob} onChange={(v) => set("customer.dob", v)} />
+            <SelectInput label="Gender" required value={d.customer?.gender} onChange={(v) => set("customer.gender", v)} options={["Male", "Female"]} />
+          </div>
+          <div className="grid grid-cols-3 gap-4">
+            <SelectInput label="ID Type" required value={d.customer?.idType} onChange={(v) => set("customer.idType", v)} options={ID_TYPES} />
+            <TextInput label="ID Number" required value={d.customer?.idNumber} onChange={(v) => set("customer.idNumber", v)} />
+            <SelectInput label="Branch" required value={d.branch} onChange={(v) => set("branch", v)} options={BRANCHES} />
+            {d.customer?.idType && d.customer.idType !== "NRC" && (
+              <>
+                <TextInput label="ID Issue Date" required type="date" value={d.customer?.idIssueDate} onChange={(v) => set("customer.idIssueDate", v)} />
+                <TextInput label="ID Expiry Date" required type="date" value={d.customer?.idExpiryDate} onChange={(v) => set("customer.idExpiryDate", v)} />
+              </>
+            )}
+          </div>
+          <div className="grid grid-cols-3 gap-4">
+            <SelectInput label="Nationality" required value={d.customer?.nationality} onChange={(v) => set("customer.nationality", v)} options={NATIONALITIES} />
+            <SelectInput label="Country of Residence" required value={d.customer?.countryOfResidence} onChange={(v) => set("customer.countryOfResidence", v)} options={["Zambia", ...NATIONALITIES.filter((n) => n !== "Zambian")]} />
+            {d.customer?.nationality && d.customer.nationality !== "Zambian" && (
+              <SelectInput label="Permit Type" required value={d.customer?.permitType} onChange={(v) => set("customer.permitType", v)} options={PERMIT_TYPES} />
+            )}
+            <TextInput label="TPIN" required value={d.customer?.tpin} onChange={(v) => set("customer.tpin", v)} hint="Only active TPINs are accepted." />
+          </div>
+          <div className="grid grid-cols-3 gap-4">
+            <TextInput label="Mobile Phone" required value={d.customer?.mobile} onChange={(v) => set("customer.mobile", v)} placeholder="+260 9..." />
+            <TextInput label="Phone Number" value={d.customer?.phoneNumber} onChange={(v) => set("customer.phoneNumber", v)} />
+            <TextInput label="Email Address" type="email" value={d.customer?.email} onChange={(v) => set("customer.email", v)} />
+          </div>
+          <div className="grid grid-cols-4 gap-4">
+            <TextInput label="House / Plot Number" required value={d.customer?.houseNumber} onChange={(v) => set("customer.houseNumber", v)} />
+            <TextInput label="Street / Area / Landmark" required value={d.customer?.street} onChange={(v) => set("customer.street", v)} />
+            <SelectInput label="Province" required value={d.customer?.province} onChange={(v) => { set("customer.province", v); set("customer.district", ""); }} options={Object.keys(PROVINCES)} />
+            <SelectInput label="District" required value={d.customer?.district} onChange={(v) => set("customer.district", v)} options={PROVINCES[d.customer?.province] || []} />
+          </div>
+          <div className="grid grid-cols-4 gap-4">
+            <TextInput label="Occupation" required value={d.customer?.occupation} onChange={(v) => set("customer.occupation", v)} />
+            <SelectInput label="Employment Type" required value={d.customer?.employmentType} onChange={(v) => set("customer.employmentType", v)} options={EMPLOYMENT_TYPES} />
+            <TextInput label="Source of Income" required value={d.customer?.sourceOfIncome} onChange={(v) => set("customer.sourceOfIncome", v)} />
+            <SelectInput label="Income Range" required value={d.customer?.incomeRange} onChange={(v) => set("customer.incomeRange", v)} options={INCOME_RANGES} />
+          </div>
+          <div className="grid grid-cols-2 gap-4">
+            <TextInput label="Next of Kin Name" required value={d.customer?.nextOfKinName} onChange={(v) => set("customer.nextOfKinName", v)} />
+            <TextInput label="Next of Kin Mobile Number" required value={d.customer?.nextOfKinMobile} onChange={(v) => set("customer.nextOfKinMobile", v)} />
+          </div>
+          <div className="space-y-2 rounded-md bg-slate-50 border border-slate-200 p-4">
+            <CheckField label="Terms and conditions accepted" checked={d.customer?.terms} onChange={(v) => set("customer.terms", v)} />
+            <CheckField label="Consent form accepted" checked={d.customer?.consent} onChange={(v) => set("customer.consent", v)} />
+          </div>
+          {d.accountHolderType === "joint" && (
+            <div className="border-t border-slate-200 pt-5">
+              <div className="flex items-center justify-between mb-2">
+                <h3 className="text-sm font-semibold text-slate-800">Joint Account Holders</h3>
+                <button type="button" onClick={() => set("jointHolders", [...(d.jointHolders || []), { firstName: "", lastName: "", idNumber: "", mobile: "" }])} className="inline-flex items-center gap-1 text-xs font-medium text-slate-600 hover:text-slate-900"><Plus size={14} /> Add holder</button>
+              </div>
+              <div className="space-y-3">
+                {(d.jointHolders || []).map((h, i) => (
+                  <div key={i} className="grid grid-cols-5 gap-2 items-end bg-slate-50 border border-slate-200 rounded-md p-3">
+                    <TextInput label="First Name" required value={h.firstName} onChange={(v) => { const jh = _.cloneDeep(d.jointHolders); jh[i].firstName = v; set("jointHolders", jh); }} />
+                    <TextInput label="Last Name" required value={h.lastName} onChange={(v) => { const jh = _.cloneDeep(d.jointHolders); jh[i].lastName = v; set("jointHolders", jh); }} />
+                    <TextInput label="ID Number" required value={h.idNumber} onChange={(v) => { const jh = _.cloneDeep(d.jointHolders); jh[i].idNumber = v; set("jointHolders", jh); }} />
+                    <TextInput label="Mobile" required value={h.mobile} onChange={(v) => { const jh = _.cloneDeep(d.jointHolders); jh[i].mobile = v; set("jointHolders", jh); }} />
+                    <button type="button" onClick={() => set("jointHolders", d.jointHolders.filter((_x, idx) => idx !== i))} className="mb-0.5 h-9 rounded-md border border-slate-300 text-slate-400 hover:text-red-600 hover:border-red-300 flex items-center justify-center"><Trash2 size={14} /></button>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      ),
+    },
+    {
+      title: "Risk Rating & Sanctions Screening",
+      render: (d, set, setDraft, ctx) => (
+        <div className="space-y-6">
+          <Field label="Risk Rating" required hint="Normally imported from the risk rating engine; manual entry available if integration is unavailable.">
+            <div className="flex gap-2">
+              {["Low", "Medium", "High"].map((r) => (
+                <button key={r} type="button" onClick={() => set("riskRating", r)} className={cx("flex-1 rounded-md border px-3 py-2 text-sm", d.riskRating === r ? (r === "High" ? "border-red-600 bg-red-600 text-white" : r === "Medium" ? "border-amber-500 bg-amber-500 text-white" : "border-emerald-600 bg-emerald-600 text-white") : "border-slate-300 text-slate-600")}>{r}</button>
+              ))}
+            </div>
+          </Field>
+          {d.riskRating === "High" && (
+            <div className="rounded-md border border-amber-200 bg-amber-50 p-3 text-xs text-amber-800 flex gap-2">
+              <AlertTriangle size={16} className="shrink-0" />
+              High-risk customers require Enhanced Due Diligence (EDD), renewed yearly. An approved EDD form will be required in the documents step.
+            </div>
+          )}
+          <div className="rounded-md border border-slate-200 p-4">
+            <div className="flex items-center justify-between">
+              <div>
+                <div className="text-sm font-medium text-slate-800">Sanctions Screening</div>
+                <div className="text-xs text-slate-400">Screens all names captured on the customer's ID against sanctions watchlists.</div>
+              </div>
+              <button type="button" onClick={() => { const hit = Math.random() < 0.15; set("sanctionsResult", hit ? "Positive Hit" : "Clear"); pushToast(hit ? "Positive sanctions match — referral to Compliance is required." : "Sanctions screening clear.", hit ? "warn" : "ok"); }} className="rounded-md bg-slate-900 px-3 py-2 text-xs font-medium text-white hover:bg-slate-800">Run Screening</button>
+            </div>
+            {d.sanctionsResult && (
+              <div className={cx("mt-3 rounded-md px-3 py-2 text-sm font-medium flex items-center gap-2", d.sanctionsResult === "Clear" ? "bg-emerald-50 text-emerald-700" : "bg-red-50 text-red-700")}>
+                {d.sanctionsResult === "Clear" ? <CheckCircle2 size={16} /> : <AlertTriangle size={16} />}
+                {d.sanctionsResult === "Clear" ? "No matches found — proceed to open the account." : "Positive match — do not onboard. Case will be auto-cascaded to Compliance for review."}
+              </div>
+            )}
+          </div>
+        </div>
+      ),
+    },
+    {
+      title: "Document Uploads",
+      render: (d, set) => {
+        const isLite = LITE_PRODUCTS.includes(d.accountProduct);
+        const isForeign = d.customer?.nationality && d.customer.nationality !== "Zambian";
+        return (
+          <div className="space-y-3">
+            <DocToggle label="Selfie / Passport-size Photo" checked={d.documents?.selfie} onChange={(v) => set("documents.selfie", v)} />
+            <DocToggle label={`ID Proof — ${d.customer?.idType || "ID document"}`} checked={d.documents?.idProof} onChange={(v) => set("documents.idProof", v)} />
+            {!isLite && <DocToggle label="Proof of Residence" hint="Required for Full KYC accounts; not required for Lite KYC products." checked={d.documents?.proofOfResidence} onChange={(v) => set("documents.proofOfResidence", v)} />}
+            {isForeign && <DocToggle label={`Permit — ${d.customer?.permitType || "non-national"}`} hint="Must be notarized if issued abroad." checked={d.documents?.permit} onChange={(v) => set("documents.permit", v)} />}
+            {d.riskRating === "High" && <DocToggle label="Approved EDD Form" hint="Issue/expiry date tracked; reminder sent 30 days before expiry." checked={d.documents?.edd} onChange={(v) => set("documents.edd", v)} />}
+            <DocToggle label="Signature" checked={d.documents?.signature} onChange={(v) => set("documents.signature", v)} />
+            {d.accountHolderType === "joint" && <DocToggle label="Signing Mandate (Joint)" checked={d.documents?.mandate} onChange={(v) => set("documents.mandate", v)} />}
+            <DocToggle label="Miscellaneous Documents" hint="Covers future static-data amendments or additional requests." checked={d.documents?.misc} onChange={(v) => set("documents.misc", v)} />
+          </div>
+        );
+      },
+    },
+    {
+      title: "Confirmation & Submit",
+      hideFooter: true,
+      render: (d, set, setDraft, { onDone, onCancel, goStep }) => {
+        const required = [
+          ["customer.title", "Title"], ["customer.firstName", "First name"], ["customer.lastName", "Last name"],
+          ["customer.maritalStatus", "Marital status"], ["customer.dob", "Date of birth"], ["customer.gender", "Gender"],
+          ["customer.idType", "ID type"], ["customer.idNumber", "ID number"], ["branch", "Branch"],
+          ["customer.nationality", "Nationality"], ["customer.countryOfResidence", "Country of residence"],
+          ["customer.tpin", "TPIN"], ["customer.mobile", "Mobile phone"], ["customer.houseNumber", "House/plot number"],
+          ["customer.street", "Street/area"], ["customer.province", "Province"], ["customer.district", "District"],
+          ["customer.occupation", "Occupation"], ["customer.employmentType", "Employment type"],
+          ["customer.sourceOfIncome", "Source of income"], ["customer.incomeRange", "Income range"],
+          ["customer.nextOfKinName", "Next of kin name"], ["customer.nextOfKinMobile", "Next of kin mobile"],
+          ["customer.terms", "Terms & conditions"], ["customer.consent", "Consent form"],
+          ["accountProduct", "Account product"], ["riskRating", "Risk rating"], ["sanctionsResult", "Sanctions screening"],
+        ];
+        const missing = required.filter(([p]) => !_.get(d, p));
+        const wantDeferral = !!d.wantDeferral;
+        const deferralReason = d.deferralReason || "";
+        const blockedBySanctions = d.sanctionsResult === "Positive Hit";
+        return (
+          <div className="space-y-5">
+            <div className="rounded-md border border-slate-200 divide-y divide-slate-100 text-sm">
+              <div className="grid grid-cols-2 gap-x-6 gap-y-2 p-4">
+                <div><span className="text-slate-400">Customer</span><div className="font-medium text-slate-800">{d.customer?.title} {d.customer?.firstName} {d.customer?.lastName}</div></div>
+                <div><span className="text-slate-400">Branch</span><div className="font-medium text-slate-800">{d.branch || "-"}</div></div>
+                <div><span className="text-slate-400">Account</span><div className="font-medium text-slate-800">{d.accountCategory} — {d.accountProduct || "-"}</div></div>
+                <div><span className="text-slate-400">Risk Rating</span><div><RiskBadge r={d.riskRating} /></div></div>
+              </div>
+            </div>
+            {missing.length > 0 && (
+              <div className="rounded-md border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800">
+                <div className="font-medium flex items-center gap-2 mb-1"><AlertTriangle size={16} /> {missing.length} mandatory item(s) incomplete</div>
+                <ul className="list-disc list-inside text-xs space-y-0.5">{missing.map(([, label]) => <li key={label}>{label}</li>)}</ul>
+                <div className="mt-3">
+                  <CheckField label="Request a deferral for the missing items (subject to supervisor approval)" checked={wantDeferral} onChange={(v) => set("wantDeferral", v)} />
+                  {wantDeferral && <textarea value={deferralReason} onChange={(e) => set("deferralReason", e.target.value)} placeholder="Reason for deferral..." className={cx(inputCls, "mt-2")} rows={2} />}
+                </div>
+              </div>
+            )}
+            {blockedBySanctions && (
+              <div className="rounded-md border border-red-200 bg-red-50 p-4 text-sm text-red-800 flex gap-2">
+                <AlertTriangle size={16} className="shrink-0" />
+                Positive sanctions match — this application will be routed to Compliance and cannot be onboarded until cleared.
+              </div>
+            )}
+            <div className="flex items-center justify-between border-t border-slate-200 pt-4">
+              <button onClick={onCancel} className="rounded-md border border-slate-300 px-4 py-2 text-sm font-medium text-slate-600 hover:bg-slate-50">Cancel</button>
+              <button
+                disabled={missing.length > 0 && !wantDeferral}
+                onClick={() => onDone({ ...d, deferral: wantDeferral ? { reason: deferralReason, expiresAt: addDays(today(), 7) } : null })}
+                className={cx("rounded-md px-5 py-2.5 text-sm font-semibold text-white", (missing.length > 0 && !wantDeferral) ? "bg-slate-300 cursor-not-allowed" : "bg-amber-600 hover:bg-amber-700")}>
+                {blockedBySanctions ? "Submit for Compliance Review" : wantDeferral ? "Submit with Deferral" : "Submit Application"}
+              </button>
+            </div>
+          </div>
+        );
+      },
+    },
+  ];
+}
+
+function RetailWizard({ onCancel, onCreate, pushToast }) {
+  const initial = { segment: "Retail", accountHolderType: "individual", jointHolders: [], products: [], documents: {}, customer: {} };
+  return (
+    <Wizard title="New Retail Account" subtitle="Retail Onboarding" steps={retailSteps(pushToast)} initialDraft={initial} onCancel={onCancel}
+      onDone={(draft) => {
+        const status = draft.sanctionsResult === "Positive Hit" ? "Compliance Referral" : draft.deferral ? "Submitted (Deferred)" : "Submitted";
+        const app = {
+          id: genId(), kind: "retail", isAdditional: false, branch: draft.branch, createdAt: today(),
+          accountHolderType: draft.accountHolderType, accountCategory: draft.accountCategory, accountProduct: draft.accountProduct,
+          customer: draft.customer, jointHolders: draft.jointHolders, riskRating: draft.riskRating, sanctionsResult: draft.sanctionsResult,
+          documents: draft.documents, deferral: draft.deferral, status, cifNumber: null, accountNumber: null,
+          auditLog: [{ action: `Application submitted${draft.deferral ? " with deferral request" : ""}`, actor: `Branch Staff · ${draft.branch}`, at: today() }],
+        };
+        onCreate(app);
+      }} />
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Corporate wizard
+// ---------------------------------------------------------------------------
+function corporateSteps(pushToast) {
+  return [
+    {
+      title: "Company Information",
+      render: (d, set) => (
+        <div className="space-y-4">
+          <div className="grid grid-cols-2 gap-4">
+            <TextInput label="Company Name" required value={d.company?.name} onChange={(v) => set("company.name", v)} />
+            <TextInput label="Companies Registration Number" required value={d.company?.registrationNumber} onChange={(v) => set("company.registrationNumber", v)} hint="Validated / prefilled via PACRA if a printout is purchased." />
+            <TextInput label="Date of Incorporation" required type="date" value={d.company?.dateOfIncorporation} onChange={(v) => set("company.dateOfIncorporation", v)} />
+            <SelectInput label="Country of Incorporation" required value={d.company?.country} onChange={(v) => set("company.country", v)} options={["Zambia", ...NATIONALITIES.filter((n) => n !== "Zambian")]} />
+            <SelectInput label="Industry" required value={d.company?.industry} onChange={(v) => set("company.industry", v)} options={INDUSTRIES} />
+            <TextInput label="Nature of Business" required value={d.company?.nature} onChange={(v) => set("company.nature", v)} />
+            <TextInput label="Source of Income" required value={d.company?.sourceOfIncome} onChange={(v) => set("company.sourceOfIncome", v)} />
+            <TextInput label="Average Monthly Income" required type="number" value={d.company?.avgIncome} onChange={(v) => set("company.avgIncome", v)} />
+            <TextInput label="TPIN" required value={d.company?.tpin} onChange={(v) => set("company.tpin", v)} hint="Verified against ZRA." />
+            <TextInput label="Phone Number" required value={d.company?.phone} onChange={(v) => set("company.phone", v)} />
+            <SelectInput label="Province" required value={d.company?.province} onChange={(v) => { set("company.province", v); set("company.district", ""); }} options={Object.keys(PROVINCES)} />
+            <SelectInput label="District / Town" required value={d.company?.district} onChange={(v) => set("company.district", v)} options={PROVINCES[d.company?.province] || []} />
+          </div>
+        </div>
+      ),
+    },
+    {
+      title: "Directors, Shareholders & Signatories",
+      render: (d, set) => (
+        <div className="space-y-3">
+          <div className="flex items-center justify-between">
+            <h3 className="text-sm font-semibold text-slate-800">People associated with the account</h3>
+            <button type="button" onClick={() => set("people", [...(d.people || []), { role: "Director", firstName: "", lastName: "", gender: "", idNumber: "", nationality: "Zambian", mobile: "" }])} className="inline-flex items-center gap-1 text-xs font-medium text-slate-600 hover:text-slate-900"><Plus size={14} /> Add person</button>
+          </div>
+          {(d.people || []).length === 0 && <div className="text-xs text-slate-400 border border-dashed border-slate-300 rounded-md p-4 text-center">Add at least one director or signatory.</div>}
+          <div className="space-y-3">
+            {(d.people || []).map((p, i) => (
+              <div key={i} className="rounded-md border border-slate-200 p-3 space-y-2">
+                <div className="flex items-center justify-between">
+                  <div className="flex gap-1">
+                    {["Director", "Shareholder", "Signatory", "Agent"].map((r) => (
+                      <button key={r} type="button" onClick={() => { const arr = _.cloneDeep(d.people); arr[i].role = r; set("people", arr); }} className={cx("rounded-full px-2.5 py-0.5 text-[11px] font-medium border", p.role === r ? "bg-slate-900 text-white border-slate-900" : "border-slate-300 text-slate-500")}>{r}</button>
+                    ))}
+                  </div>
+                  <button type="button" onClick={() => set("people", d.people.filter((_x, idx) => idx !== i))} className="text-slate-400 hover:text-red-600"><Trash2 size={14} /></button>
+                </div>
+                <div className="grid grid-cols-3 gap-2">
+                  <TextInput label="First Name" required value={p.firstName} onChange={(v) => { const arr = _.cloneDeep(d.people); arr[i].firstName = v; set("people", arr); }} />
+                  <TextInput label="Surname" required value={p.lastName} onChange={(v) => { const arr = _.cloneDeep(d.people); arr[i].lastName = v; set("people", arr); }} />
+                  <SelectInput label="Gender" required value={p.gender} onChange={(v) => { const arr = _.cloneDeep(d.people); arr[i].gender = v; set("people", arr); }} options={["Male", "Female"]} />
+                  <TextInput label="ID Number" required value={p.idNumber} onChange={(v) => { const arr = _.cloneDeep(d.people); arr[i].idNumber = v; set("people", arr); }} />
+                  <SelectInput label="Nationality" required value={p.nationality} onChange={(v) => { const arr = _.cloneDeep(d.people); arr[i].nationality = v; set("people", arr); }} options={NATIONALITIES} />
+                  <TextInput label="Mobile Number" required value={p.mobile} onChange={(v) => { const arr = _.cloneDeep(d.people); arr[i].mobile = v; set("people", arr); }} />
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      ),
+    },
+    {
+      title: "Document Uploads",
+      render: (d, set) => (
+        <div className="space-y-3">
+          <DocToggle label="PACRA Printout" hint="Or PACRA API validation of registration details." checked={d.documents?.pacra} onChange={(v) => set("documents.pacra", v)} />
+          <DocToggle label="Shareholding Documents" checked={d.documents?.shareholding} onChange={(v) => set("documents.shareholding", v)} />
+          <DocToggle label="Signing Mandate" checked={d.documents?.signingMandate} onChange={(v) => set("documents.signingMandate", v)} />
+          <DocToggle label="Director / Signatory ID Copies" checked={d.documents?.ids} onChange={(v) => set("documents.ids", v)} />
+        </div>
+      ),
+    },
+    {
+      title: "Risk Rating & Sanctions Screening",
+      render: (d, set) => (
+        <div className="space-y-6">
+          <Field label="Risk Rating" required>
+            <div className="flex gap-2">
+              {["Low", "Medium", "High"].map((r) => (
+                <button key={r} type="button" onClick={() => set("riskRating", r)} className={cx("flex-1 rounded-md border px-3 py-2 text-sm", d.riskRating === r ? (r === "High" ? "border-red-600 bg-red-600 text-white" : r === "Medium" ? "border-amber-500 bg-amber-500 text-white" : "border-emerald-600 bg-emerald-600 text-white") : "border-slate-300 text-slate-600")}>{r}</button>
+              ))}
+            </div>
+          </Field>
+          {d.riskRating === "High" && <div className="rounded-md border border-amber-200 bg-amber-50 p-3 text-xs text-amber-800">Enhanced Due Diligence (EDD) will be required before CPU review.</div>}
+          <div className="rounded-md border border-slate-200 p-4">
+            <div className="flex items-center justify-between">
+              <div className="text-sm font-medium text-slate-800">Sanctions Screening</div>
+              <button type="button" onClick={() => { const hit = Math.random() < 0.15; set("sanctionsResult", hit ? "Positive Hit" : "Clear"); pushToast(hit ? "Positive sanctions match on a related party." : "Sanctions screening clear.", hit ? "warn" : "ok"); }} className="rounded-md bg-slate-900 px-3 py-2 text-xs font-medium text-white hover:bg-slate-800">Run Screening</button>
+            </div>
+            {d.sanctionsResult && (
+              <div className={cx("mt-3 rounded-md px-3 py-2 text-sm font-medium", d.sanctionsResult === "Clear" ? "bg-emerald-50 text-emerald-700" : "bg-red-50 text-red-700")}>
+                {d.sanctionsResult === "Clear" ? "No matches found." : "Positive match — routed to Compliance."}
+              </div>
+            )}
+          </div>
+        </div>
+      ),
+    },
+    {
+      title: "Confirmation & Submit",
+      hideFooter: true,
+      render: (d, set, setDraft, { onDone, onCancel }) => {
+        const required = [["company.name", "Company name"], ["company.registrationNumber", "Registration number"], ["company.tpin", "TPIN"], ["riskRating", "Risk rating"], ["sanctionsResult", "Sanctions screening"]];
+        const missing = required.filter(([p]) => !_.get(d, p));
+        const missingPeople = (d.people || []).length === 0;
+        const blocked = d.sanctionsResult === "Positive Hit";
+        return (
+          <div className="space-y-5">
+            <div className="rounded-md border border-slate-200 p-4 text-sm grid grid-cols-2 gap-y-2">
+              <div><span className="text-slate-400">Company</span><div className="font-medium text-slate-800">{d.company?.name || "-"}</div></div>
+              <div><span className="text-slate-400">Registration No.</span><div className="font-medium text-slate-800">{d.company?.registrationNumber || "-"}</div></div>
+              <div><span className="text-slate-400">Industry</span><div className="font-medium text-slate-800">{d.company?.industry || "-"}</div></div>
+              <div><span className="text-slate-400">Risk Rating</span><RiskBadge r={d.riskRating} /></div>
+            </div>
+            {(missing.length > 0 || missingPeople) && (
+              <div className="rounded-md border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800">
+                <div className="font-medium mb-1">Incomplete before submission:</div>
+                <ul className="list-disc list-inside text-xs">{missing.map(([, l]) => <li key={l}>{l}</li>)}{missingPeople && <li>At least one director/signatory</li>}</ul>
+              </div>
+            )}
+            {blocked && <div className="rounded-md border border-red-200 bg-red-50 p-4 text-sm text-red-800">Positive sanctions match — this application will route to Compliance.</div>}
+            <div className="flex items-center justify-between border-t border-slate-200 pt-4">
+              <button onClick={onCancel} className="rounded-md border border-slate-300 px-4 py-2 text-sm font-medium text-slate-600">Cancel</button>
+              <button disabled={missing.length > 0 || missingPeople} onClick={() => onDone(d)} className={cx("rounded-md px-5 py-2.5 text-sm font-semibold text-white", (missing.length > 0 || missingPeople) ? "bg-slate-300 cursor-not-allowed" : "bg-amber-600 hover:bg-amber-700")}>Submit Application</button>
+            </div>
+          </div>
+        );
+      },
+    },
+  ];
+}
+
+function CorporateWizard({ onCancel, onCreate, pushToast }) {
+  const initial = { people: [], documents: {}, company: {} };
+  return (
+    <Wizard title="New Corporate Account" subtitle="Corporate / Business Onboarding" steps={corporateSteps(pushToast)} initialDraft={initial} onCancel={onCancel}
+      onDone={(draft) => {
+        const status = draft.sanctionsResult === "Positive Hit" ? "Compliance Referral" : "Submitted";
+        const app = {
+          id: genId(), kind: "corporate", isAdditional: false, branch: "Digital / RM Channel", createdAt: today(),
+          company: draft.company, people: draft.people, riskRating: draft.riskRating, sanctionsResult: draft.sanctionsResult,
+          documents: draft.documents, status, cifNumber: null, accountNumber: null,
+          auditLog: [{ action: "Application submitted", actor: "Relationship Manager", at: today() }],
+        };
+        onCreate(app);
+      }} />
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Additional account for existing customer
+// ---------------------------------------------------------------------------
+function AdditionalAccountFlow({ onCancel, onCreate, pushToast }) {
+  const [query, setQuery] = useState("");
+  const [found, setFound] = useState(null);
+  const [searched, setSearched] = useState(false);
+  const [docsValid, setDocsValid] = useState(true);
+  const [category, setCategory] = useState("");
+  const [product, setProduct] = useState("");
+
+  function search() {
+    setSearched(true);
+    const m = EXISTING_CUSTOMERS.find((c) => c.cif.toLowerCase() === query.trim().toLowerCase() || c.nrc.toLowerCase() === query.trim().toLowerCase());
+    setFound(m || null);
+    if (m) setDocsValid(m.docsValid);
+  }
+
+  if (!found) {
+    return (
+      <div className="max-w-xl mx-auto bg-white rounded-lg border border-slate-200 shadow-sm p-6">
+        <h2 className="text-lg font-semibold text-slate-900 mb-1">Additional Account — Existing Customer</h2>
+        <p className="text-sm text-slate-500 mb-4">Search by NRC / registration number or CIF to confirm the customer already exists in the core banking system.</p>
+        <div className="flex gap-2">
+          <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="e.g. CIF3820194 or 123456/10/1" className={inputCls} />
+          <button onClick={search} className="rounded-md bg-slate-900 px-4 py-2 text-sm font-medium text-white flex items-center gap-1"><Search size={16} /> Search</button>
+        </div>
+        <div className="mt-3 text-xs text-slate-400">Try <button className="underline" onClick={() => setQuery("CIF3820194")}>CIF3820194</button> (Chanda Mwansa) or <button className="underline" onClick={() => setQuery("REG-2019-4471")}>REG-2019-4471</button> (Bwalya Trading Ltd).</div>
+        {searched && !found && (
+          <div className="mt-5 rounded-md border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800 flex items-center justify-between">
+            <span>Customer not found in core banking.</span>
+            <button onClick={onCancel} className="text-xs font-semibold underline">Go to New Account Opening</button>
+          </div>
+        )}
+        <div className="mt-6"><button onClick={onCancel} className="text-sm text-slate-500">Cancel</button></div>
+      </div>
+    );
+  }
+
+  const allowedProducts = category === "Savings" ? SAVINGS_ACCOUNTS.filter((a) => a !== "Other") : CURRENT_ACCOUNTS.filter((a) => a !== "Other" && a !== "Easy Kwacha Student");
+
+  return (
+    <div className="max-w-2xl mx-auto bg-white rounded-lg border border-slate-200 shadow-sm">
+      <div className="border-b border-slate-200 px-6 py-4">
+        <h2 className="text-lg font-semibold text-slate-900">Additional Account</h2>
+        <p className="text-xs text-slate-400">Existing CIF will be reused — no new customer record is created.</p>
+      </div>
+      <div className="p-6 space-y-5">
+        <div className="rounded-md border border-slate-200 p-4 grid grid-cols-2 gap-y-2 text-sm">
+          <div><span className="text-slate-400">Customer / Company</span><div className="font-medium text-slate-800">{found.name}</div></div>
+          <div><span className="text-slate-400">CIF</span><div className="font-mono font-medium text-slate-800">{found.cif}</div></div>
+          <div><span className="text-slate-400">NRC / Reg. No.</span><div className="font-medium text-slate-800">{found.nrc}</div></div>
+          <div><span className="text-slate-400">Home Branch</span><div className="font-medium text-slate-800">{found.branch}</div></div>
+        </div>
+        <Field label="Are all existing documents still valid?" required>
+          <div className="flex gap-2">
+            <button onClick={() => setDocsValid(true)} className={cx("flex-1 rounded-md border px-3 py-2 text-sm", docsValid ? "border-emerald-600 bg-emerald-600 text-white" : "border-slate-300 text-slate-600")}>Yes, still valid</button>
+            <button onClick={() => setDocsValid(false)} className={cx("flex-1 rounded-md border px-3 py-2 text-sm", !docsValid ? "border-amber-500 bg-amber-500 text-white" : "border-slate-300 text-slate-600")}>No, needs update</button>
+          </div>
+        </Field>
+        {!docsValid && <DocToggle label="Updated document uploaded" hint="Upload the expired / missing document under the designated folder." checked={false} onChange={() => pushToast("Document marked for upload — attach in KYC review.", "ok")} />}
+        <div className="grid grid-cols-2 gap-4">
+          <Field label="Account Category" required>
+            <div className="flex gap-2">
+              {["Savings", "Current"].map((c) => (<button key={c} onClick={() => { setCategory(c); setProduct(""); }} className={cx("flex-1 rounded-md border px-3 py-2 text-sm", category === c ? "border-slate-900 bg-slate-900 text-white" : "border-slate-300 text-slate-600")}>{c}</button>))}
+            </div>
+          </Field>
+          {category && <SelectInput label="Account Product" required value={product} onChange={setProduct} options={allowedProducts} />}
+        </div>
+      </div>
+      <div className="border-t border-slate-200 px-6 py-4 flex items-center justify-between">
+        <button onClick={onCancel} className="rounded-md border border-slate-300 px-4 py-2 text-sm font-medium text-slate-600">Cancel</button>
+        <button disabled={!category || !product} onClick={() => {
+          const app = {
+            id: genId(), kind: "retail", isAdditional: true, branch: found.branch, createdAt: today(),
+            accountHolderType: "individual", accountCategory: category, accountProduct: product,
+            customer: { firstName: found.name.split(" ")[0], lastName: found.name.split(" ").slice(1).join(" "), idNumber: found.nrc, incomeRange: found.incomeRange },
+            jointHolders: [], riskRating: "Low", sanctionsResult: "Clear", documents: { idProof: true, proofOfResidence: docsValid },
+            status: "Submitted", cifNumber: found.cif, accountNumber: null,
+            auditLog: [{ action: `Additional account requested (${product})`, actor: `Branch Staff · ${found.branch}`, at: today() }],
+          };
+          onCreate(app);
+        }} className={cx("rounded-md px-5 py-2.5 text-sm font-semibold text-white", (!category || !product) ? "bg-slate-300 cursor-not-allowed" : "bg-amber-600 hover:bg-amber-700")}>Submit Request</button>
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// KYC Processing Centre (maker / checker / compliance)
+// ---------------------------------------------------------------------------
+function displayName(app) {
+  if (app.kind === "corporate") return app.company?.name || "Unnamed company";
+  return [app.customer?.title, app.customer?.firstName, app.customer?.lastName].filter(Boolean).join(" ") || "Unnamed customer";
+}
+function docList(app) {
+  const d = app.documents || {};
+  return Object.entries(d).filter(([, v]) => v).map(([k]) => k.replace(/([A-Z])/g, " $1").replace(/^./, (s) => s.toUpperCase()));
+}
+
+function DocCarousel({ app }) {
+  const docs = docList(app);
+  const [i, setI] = useState(0);
+  if (docs.length === 0) return <div className="text-xs text-slate-400 italic p-4 border border-dashed border-slate-200 rounded-md">No documents captured yet.</div>;
+  const idx = Math.min(i, docs.length - 1);
+  return (
+    <div className="rounded-md border border-slate-200 overflow-hidden">
+      <div className="flex items-center justify-center bg-slate-50 h-40 relative">
+        <div className="text-center">
+          <FileText className="mx-auto text-slate-300 mb-1" size={32} />
+          <div className="text-sm font-medium text-slate-600">{docs[idx]}</div>
+          <div className="text-[10px] text-slate-400 tracking-widest uppercase">Preview watermark · view only</div>
+        </div>
+      </div>
+      <div className="flex items-center justify-between px-3 py-2 bg-white border-t border-slate-200 text-xs text-slate-500">
+        <button onClick={() => setI((n) => Math.max(0, n - 1))} className="inline-flex items-center gap-1 disabled:opacity-30" disabled={idx === 0}><ChevronLeft size={14} /> Back</button>
+        <span>{idx + 1} of {docs.length}</span>
+        <button onClick={() => setI((n) => Math.min(docs.length - 1, n + 1))} className="inline-flex items-center gap-1 disabled:opacity-30" disabled={idx === docs.length - 1}>Next <ChevronRight size={14} /></button>
+      </div>
+    </div>
+  );
+}
+
+function incomeMismatch(app) {
+  if (app.kind !== "retail") return false;
+  const lowIncome = app.customer?.incomeRange === "ZMW 0 - 3,500";
+  const isLite = LITE_PRODUCTS.includes(app.accountProduct);
+  return lowIncome !== isLite && !!app.customer?.incomeRange && !!app.accountProduct;
+}
+
+function ReviewPanel({ app, role, onUpdate, pushToast }) {
+  const [amendOpen, setAmendOpen] = useState(false);
+  const [amend, setAmend] = useState({});
+  const canMaker = role === "KYC Initiator" && ["Submitted", "Submitted (Deferred)", "Returned by Checker"].includes(app.status);
+  const canChecker = role === "KYC Checker" && app.status === "Sent to Checker";
+  const canCompliance = role === "Compliance Officer" && app.status === "Compliance Referral";
+  const canBranchResubmit = role === "Branch Staff" && app.status === "Returned to Branch";
+
+  function log(action) {
+    onUpdate(app.id, (a) => ({ ...a, auditLog: [...a.auditLog, { action, actor: role, at: today() }] }));
+  }
+
+  return (
+    <div className="space-y-4">
+      <div className="rounded-md border border-slate-200 p-4">
+        <div className="flex items-start justify-between">
+          <div>
+            <div className="text-base font-semibold text-slate-900">{displayName(app)}</div>
+            <div className="text-xs text-slate-500 mt-0.5">
+              {app.kind === "corporate" ? `Reg. No. ${app.company?.registrationNumber || "-"}` : `${app.customer?.idType || "ID"} · ${app.customer?.idNumber || "-"}`}
+              {app.customer?.province && ` · ${app.customer.district}, ${app.customer.province}`}
+              {app.company?.district && ` · ${app.company.district}, ${app.company.province}`}
+            </div>
+          </div>
+          <Badge status={app.status} />
+        </div>
+        <div className="mt-3 flex flex-wrap gap-2 text-xs">
+          <span className="rounded-full bg-slate-100 px-2.5 py-1 text-slate-600">{app.isAdditional ? "Additional account" : app.kind === "corporate" ? "Corporate" : "Retail"}</span>
+          {app.accountProduct && <span className="rounded-full bg-slate-100 px-2.5 py-1 text-slate-600">{app.accountCategory} · {app.accountProduct}</span>}
+          <RiskBadge r={app.riskRating} />
+          {app.cifNumber && <span className="rounded-full bg-slate-900 text-white px-2.5 py-1 font-mono">{app.cifNumber}</span>}
+        </div>
+      </div>
+
+      {incomeMismatch(app) && (
+        <div className="rounded-md border border-amber-200 bg-amber-50 p-3 text-xs text-amber-800 flex items-center gap-2"><AlertTriangle size={14} /> Account product may not align with declared income range — confirm with branch before proceeding.</div>
+      )}
+
+      <div>
+        <div className="text-xs font-medium text-slate-500 mb-1.5">Documents</div>
+        <DocCarousel app={app} />
+      </div>
+
+      {canMaker && (
+        <div className="rounded-md border border-indigo-200 bg-indigo-50/50 p-4 space-y-3">
+          <div className="text-sm font-semibold text-indigo-900">KYC Initiator actions</div>
+          {!amendOpen ? (
+            <div className="flex flex-wrap gap-2">
+              <button onClick={() => { onUpdate(app.id, (a) => ({ ...a, status: "Sent to Checker", cifNumber: a.cifNumber || genCIF() })); log("Documents validated, CIF created, sent to Checker"); pushToast("CIF created and sent to Checker.", "ok"); }} className="rounded-md bg-indigo-600 px-3 py-2 text-xs font-semibold text-white hover:bg-indigo-700">All documents valid → Create CIF & Send to Checker</button>
+              <button onClick={() => setAmendOpen(true)} className="rounded-md border border-indigo-300 px-3 py-2 text-xs font-semibold text-indigo-700">Minor errors → Amend</button>
+              <button onClick={() => { onUpdate(app.id, (a) => ({ ...a, status: "Returned to Branch" })); log("Fundamental document error — returned to branch"); pushToast("Application returned to branch.", "warn"); }} className="rounded-md border border-red-300 px-3 py-2 text-xs font-semibold text-red-700">Fundamental error → Reject to Branch</button>
+            </div>
+          ) : (
+            <div className="space-y-2">
+              <div className="grid grid-cols-2 gap-2">
+                <TextInput label="Corrected name spelling" value={amend.name} onChange={(v) => setAmend({ ...amend, name: v })} />
+                <TextInput label="Corrected ID / NRC number" value={amend.id} onChange={(v) => setAmend({ ...amend, id: v })} />
+              </div>
+              <div className="flex gap-2">
+                <button onClick={() => { onUpdate(app.id, (a) => ({ ...a, status: "Sent to Checker", cifNumber: a.cifNumber || genCIF() })); log(`Minor amendments applied (${[amend.name && "name", amend.id && "ID number"].filter(Boolean).join(", ") || "spelling"}), CIF created, sent to Checker`); pushToast("Amendments applied — sent to Checker.", "ok"); setAmendOpen(false); }} className="rounded-md bg-indigo-600 px-3 py-2 text-xs font-semibold text-white">Apply & Send to Checker</button>
+                <button onClick={() => setAmendOpen(false)} className="text-xs text-slate-500">Cancel</button>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {canChecker && (
+        <div className="rounded-md border border-emerald-200 bg-emerald-50/50 p-4 space-y-3">
+          <div className="text-sm font-semibold text-emerald-900">KYC Checker actions</div>
+          <div className="flex flex-wrap gap-2">
+            <button onClick={() => { const acct = genAcct(); onUpdate(app.id, (a) => ({ ...a, status: "Active", accountNumber: acct })); log(`Account approved and activated (${acct}); SMS/Email notification sent to customer and branch`); pushToast("Account activated — notifications sent.", "ok"); }} className="rounded-md bg-emerald-600 px-3 py-2 text-xs font-semibold text-white hover:bg-emerald-700">Approve & Activate</button>
+            <button onClick={() => { onUpdate(app.id, (a) => ({ ...a, status: "Returned by Checker" })); log("Returned to Maker for correction"); pushToast("Returned to Maker.", "warn"); }} className="rounded-md border border-amber-300 px-3 py-2 text-xs font-semibold text-amber-700">Return to Maker</button>
+          </div>
+        </div>
+      )}
+
+      {canCompliance && (
+        <div className="rounded-md border border-red-200 bg-red-50/50 p-4 space-y-3">
+          <div className="text-sm font-semibold text-red-900">Compliance actions — positive sanctions match</div>
+          <div className="flex flex-wrap gap-2">
+            <button onClick={() => { onUpdate(app.id, (a) => ({ ...a, status: "Submitted" })); log("Compliance: no objection — released to KYC queue"); pushToast("No objection — released to KYC queue.", "ok"); }} className="rounded-md bg-slate-900 px-3 py-2 text-xs font-semibold text-white">No Objection → Proceed</button>
+            <button onClick={() => { onUpdate(app.id, (a) => ({ ...a, status: "Terminated" })); log("Compliance: positive hit confirmed — process terminated"); pushToast("Application terminated.", "warn"); }} className="rounded-md border border-red-300 px-3 py-2 text-xs font-semibold text-red-700">Confirm Positive Hit → Terminate</button>
+          </div>
+        </div>
+      )}
+
+      {canBranchResubmit && (
+        <div className="rounded-md border border-slate-200 p-4 space-y-2">
+          <div className="text-sm font-semibold text-slate-800">Branch resubmission</div>
+          <p className="text-xs text-slate-500">Correct the flagged issue offline, then resubmit to the KYC queue.</p>
+          <button onClick={() => { onUpdate(app.id, (a) => ({ ...a, status: "Submitted" })); log("Corrected and resubmitted by branch"); pushToast("Resubmitted to KYC queue.", "ok"); }} className="rounded-md bg-slate-900 px-3 py-2 text-xs font-semibold text-white">Resubmit to KYC Queue</button>
+        </div>
+      )}
+
+      <div>
+        <div className="text-xs font-medium text-slate-500 mb-1.5">Audit Trail</div>
+        <div className="space-y-1.5">
+          {app.auditLog.slice().reverse().map((l, i) => (
+            <div key={i} className="flex items-start gap-2 text-xs text-slate-500">
+              <Clock size={12} className="mt-0.5 shrink-0 text-slate-300" />
+              <div><span className="text-slate-700">{l.action}</span> — {l.actor} · {fmtDate(l.at)}</div>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function KycQueue({ apps, role, onUpdate, pushToast }) {
+  const [selected, setSelected] = useState(null);
+  const filterByRole = {
+    "Branch Staff": (a) => a.status === "Returned to Branch",
+    "KYC Initiator": (a) => ["Submitted", "Submitted (Deferred)", "Returned by Checker"].includes(a.status),
+    "KYC Checker": (a) => a.status === "Sent to Checker",
+    "Compliance Officer": (a) => a.status === "Compliance Referral",
+  };
+  const queue = apps.filter(filterByRole[role]);
+  const selectedApp = apps.find((a) => a.id === selected);
+
+  return (
+    <div className="grid grid-cols-12 gap-5">
+      <div className="col-span-12 lg:col-span-5">
+        <div className="text-xs font-medium text-slate-500 mb-2">{role} queue — {queue.length} item(s)</div>
+        <div className="space-y-2">
+          {queue.length === 0 && <div className="text-sm text-slate-400 border border-dashed border-slate-200 rounded-md p-6 text-center">Nothing waiting in this queue.</div>}
+          {queue.map((a) => (
+            <button key={a.id} onClick={() => setSelected(a.id)} className={cx("w-full text-left rounded-md border p-3 transition", selected === a.id ? "border-slate-900 bg-slate-50" : "border-slate-200 hover:border-slate-300")}>
+              <div className="flex items-center justify-between">
+                <div className="text-sm font-medium text-slate-800">{displayName(a)}</div>
+                <Badge status={a.status} />
+              </div>
+              <div className="text-xs text-slate-400 mt-1">{a.branch} · {fmtDate(a.createdAt)} · {a.isAdditional ? "Additional account" : a.kind}</div>
+            </button>
+          ))}
+        </div>
+      </div>
+      <div className="col-span-12 lg:col-span-7">
+        {selectedApp ? <ReviewPanel app={selectedApp} role={role} onUpdate={onUpdate} pushToast={pushToast} /> : (
+          <div className="h-full min-h-[240px] flex items-center justify-center text-sm text-slate-400 border border-dashed border-slate-200 rounded-md">Select an application to review</div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Dashboard & Reports
+// ---------------------------------------------------------------------------
+function StatCard({ label, value, icon: Icon, tone = "slate" }) {
+  const tones = { slate: "text-slate-700 bg-slate-100", emerald: "text-emerald-700 bg-emerald-50", amber: "text-amber-700 bg-amber-50", red: "text-red-700 bg-red-50", indigo: "text-indigo-700 bg-indigo-50" };
+  return (
+    <div className="rounded-lg border border-slate-200 bg-white p-4 flex items-center gap-3">
+      <div className={cx("h-10 w-10 rounded-md flex items-center justify-center shrink-0", tones[tone])}><Icon size={18} /></div>
+      <div><div className="text-2xl font-semibold text-slate-900 leading-none">{value}</div><div className="text-xs text-slate-500 mt-1">{label}</div></div>
+    </div>
+  );
+}
+
+function Dashboard({ apps, setView }) {
+  const active = apps.filter((a) => a.status === "Active").length;
+  const inProgress = apps.filter((a) => ["Submitted", "Submitted (Deferred)", "Sent to Checker", "Returned by Checker"].includes(a.status)).length;
+  const referrals = apps.filter((a) => a.status === "Compliance Referral").length;
+  const returned = apps.filter((a) => a.status === "Returned to Branch").length;
+  const highRisk = apps.filter((a) => a.riskRating === "High").length;
+  const recent = apps.flatMap((a) => a.auditLog.map((l) => ({ ...l, app: displayName(a) }))).sort((x, y) => new Date(y.at) - new Date(x.at)).slice(0, 8);
+
+  return (
+    <div className="space-y-6">
+      <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
+        <StatCard label="Active Accounts" value={active} icon={CheckCircle2} tone="emerald" />
+        <StatCard label="In Progress" value={inProgress} icon={RefreshCw} tone="indigo" />
+        <StatCard label="Compliance Referrals" value={referrals} icon={AlertTriangle} tone="red" />
+        <StatCard label="Returned to Branch" value={returned} icon={XCircle} tone="amber" />
+        <StatCard label="High-Risk Accounts" value={highRisk} icon={Shield} tone="slate" />
+      </div>
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
+        <div className="md:col-span-2 rounded-lg border border-slate-200 bg-white p-5">
+          <h3 className="text-sm font-semibold text-slate-800 mb-3">Recent Activity</h3>
+          <div className="space-y-3">
+            {recent.map((l, i) => (
+              <div key={i} className="flex items-start gap-3 text-sm">
+                <div className="h-6 w-6 rounded-full bg-slate-100 flex items-center justify-center shrink-0 mt-0.5"><Clock size={12} className="text-slate-400" /></div>
+                <div><span className="font-medium text-slate-800">{l.app}</span> — {l.action}<div className="text-xs text-slate-400">{l.actor} · {fmtDate(l.at)}</div></div>
+              </div>
+            ))}
+          </div>
+        </div>
+        <div className="rounded-lg border border-slate-200 bg-white p-5">
+          <h3 className="text-sm font-semibold text-slate-800 mb-3">Quick Actions</h3>
+          <div className="space-y-2">
+            <button onClick={() => setView("retail")} className="w-full flex items-center justify-between rounded-md border border-slate-200 px-3 py-2.5 text-sm text-slate-700 hover:border-slate-400"><span className="flex items-center gap-2"><UserPlus size={16} /> New Retail Account</span><ArrowRight size={14} /></button>
+            <button onClick={() => setView("corporate")} className="w-full flex items-center justify-between rounded-md border border-slate-200 px-3 py-2.5 text-sm text-slate-700 hover:border-slate-400"><span className="flex items-center gap-2"><Building2 size={16} /> New Corporate Account</span><ArrowRight size={14} /></button>
+            <button onClick={() => setView("additional")} className="w-full flex items-center justify-between rounded-md border border-slate-200 px-3 py-2.5 text-sm text-slate-700 hover:border-slate-400"><span className="flex items-center gap-2"><RefreshCw size={16} /> Additional Account</span><ArrowRight size={14} /></button>
+            <button onClick={() => setView("kyc")} className="w-full flex items-center justify-between rounded-md border border-slate-200 px-3 py-2.5 text-sm text-slate-700 hover:border-slate-400"><span className="flex items-center gap-2"><ClipboardCheck size={16} /> KYC Processing Centre</span><ArrowRight size={14} /></button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function Reports({ apps }) {
+  const deferred = apps.filter((a) => a.deferral);
+  const highRisk = apps.filter((a) => a.riskRating === "High");
+  return (
+    <div className="space-y-6">
+      <div className="rounded-lg border border-slate-200 bg-white overflow-hidden">
+        <div className="px-5 py-3 border-b border-slate-200"><h3 className="text-sm font-semibold text-slate-800">All Applications</h3></div>
+        <table className="w-full text-sm">
+          <thead className="bg-slate-50 text-xs uppercase text-slate-400"><tr>
+            <th className="text-left px-5 py-2 font-medium">Customer / Company</th><th className="text-left px-5 py-2 font-medium">Type</th>
+            <th className="text-left px-5 py-2 font-medium">Branch</th><th className="text-left px-5 py-2 font-medium">Submitted</th>
+            <th className="text-left px-5 py-2 font-medium">CIF</th><th className="text-left px-5 py-2 font-medium">Account No.</th>
+            <th className="text-left px-5 py-2 font-medium">Status</th>
+          </tr></thead>
+          <tbody className="divide-y divide-slate-100">
+            {apps.map((a) => (
+              <tr key={a.id}>
+                <td className="px-5 py-2.5 font-medium text-slate-800">{displayName(a)}</td>
+                <td className="px-5 py-2.5 text-slate-500">{a.isAdditional ? "Additional" : a.kind}</td>
+                <td className="px-5 py-2.5 text-slate-500">{a.branch}</td>
+                <td className="px-5 py-2.5 text-slate-500">{fmtDate(a.createdAt)}</td>
+                <td className="px-5 py-2.5 font-mono text-xs text-slate-500">{a.cifNumber || "-"}</td>
+                <td className="px-5 py-2.5 font-mono text-xs text-slate-500">{a.accountNumber || "-"}</td>
+                <td className="px-5 py-2.5"><Badge status={a.status} /></td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      <div className="grid md:grid-cols-2 gap-5">
+        <div className="rounded-lg border border-slate-200 bg-white overflow-hidden">
+          <div className="px-5 py-3 border-b border-slate-200"><h3 className="text-sm font-semibold text-slate-800">High-Risk Accounts — EDD Review Due</h3></div>
+          <div className="divide-y divide-slate-100">
+            {highRisk.length === 0 && <div className="p-5 text-sm text-slate-400">None on file.</div>}
+            {highRisk.map((a) => (
+              <div key={a.id} className="px-5 py-3 flex items-center justify-between text-sm">
+                <span className="font-medium text-slate-700">{displayName(a)}</span>
+                <span className="text-xs text-slate-400">Next review {fmtDate(addDays(a.createdAt, 365 - 30))}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+        <div className="rounded-lg border border-slate-200 bg-white overflow-hidden">
+          <div className="px-5 py-3 border-b border-slate-200"><h3 className="text-sm font-semibold text-slate-800">Deferrals — Expiring</h3></div>
+          <div className="divide-y divide-slate-100">
+            {deferred.length === 0 && <div className="p-5 text-sm text-slate-400">No active deferrals.</div>}
+            {deferred.map((a) => (
+              <div key={a.id} className="px-5 py-3 flex items-center justify-between text-sm">
+                <span className="font-medium text-slate-700">{displayName(a)}</span>
+                <span className="text-xs text-amber-600">Expires {fmtDate(a.deferral.expiresAt)}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// App shell
+// ---------------------------------------------------------------------------
+function App() {
+  const [apps, setApps] = useState(SEED_APPS);
+  const [view, setView] = useState("dashboard");
+  const [role, setRole] = useState("Branch Staff");
+  const [toasts, setToasts] = useState([]);
+
+  function pushToast(message, type = "ok") {
+    const id = Math.random().toString(36).slice(2);
+    setToasts((t) => [...t, { id, message, type }]);
+    setTimeout(() => setToasts((t) => t.filter((x) => x.id !== id)), 4500);
+  }
+  function addApp(app) { setApps((a) => [app, ...a]); pushToast(`Application ${app.id} submitted.`, "ok"); setView("dashboard"); }
+  function updateApp(id, fn) { setApps((prev) => prev.map((a) => (a.id === id ? fn(a) : a))); }
+
+  const nav = [
+    { key: "dashboard", label: "Dashboard", icon: LayoutDashboard },
+    { key: "retail", label: "New Retail Account", icon: UserPlus },
+    { key: "corporate", label: "New Corporate Account", icon: Building2 },
+    { key: "additional", label: "Additional Account", icon: RefreshCw },
+    { key: "kyc", label: "KYC Processing Centre", icon: ClipboardCheck },
+    { key: "reports", label: "Reports", icon: BarChart3 },
+  ];
+
+  return (
+    <div className="min-h-screen bg-slate-50 text-slate-900" style={{ fontFamily: "'IBM Plex Sans', ui-sans-serif, system-ui, sans-serif" }}>
+      <style>{`@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@500&display=swap');`}</style>
+
+      <div className="sticky top-0 z-30 bg-slate-900 text-white">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 py-3 flex items-center justify-between gap-4 flex-wrap">
+          <div className="flex items-center gap-2.5">
+            <div className="h-8 w-8 rounded-md bg-amber-500 flex items-center justify-center"><Shield size={17} className="text-slate-900" /></div>
+            <div>
+              <div className="text-sm font-semibold leading-none">Account Opening Management System</div>
+              <div className="text-[11px] text-slate-400 leading-none mt-1">KYC · AML/CFT · Onboarding Platform</div>
+            </div>
+          </div>
+          <div className="flex items-center gap-3">
+            <div className="flex items-center gap-2 text-xs text-slate-300"><User size={14} /> Role:</div>
+            <select value={role} onChange={(e) => setRole(e.target.value)} className="bg-slate-800 border border-slate-700 rounded-md text-xs px-2.5 py-1.5 text-white focus:outline-none">
+              {ROLES.map((r) => (<option key={r} value={r}>{r}</option>))}
+            </select>
+          </div>
+        </div>
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 pb-2 flex items-center gap-1 overflow-x-auto">
+          {nav.map((n) => (
+            <button key={n.key} onClick={() => setView(n.key)} className={cx("inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium whitespace-nowrap transition", view === n.key ? "bg-white text-slate-900" : "text-slate-300 hover:bg-slate-800")}>
+              <n.icon size={14} /> {n.label}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <div className="max-w-7xl mx-auto px-4 sm:px-6 py-6">
+        {view === "dashboard" && <Dashboard apps={apps} setView={setView} />}
+        {view === "retail" && <RetailWizard onCancel={() => setView("dashboard")} onCreate={addApp} pushToast={pushToast} />}
+        {view === "corporate" && <CorporateWizard onCancel={() => setView("dashboard")} onCreate={addApp} pushToast={pushToast} />}
+        {view === "additional" && <AdditionalAccountFlow onCancel={() => setView("dashboard")} onCreate={addApp} pushToast={pushToast} />}
+        {view === "kyc" && <KycQueue apps={apps} role={role} onUpdate={updateApp} pushToast={pushToast} />}
+        {view === "reports" && <Reports apps={apps} />}
+      </div>
+
+      <div className="fixed bottom-4 right-4 z-50 space-y-2 w-80">
+        {toasts.map((t) => (
+          <div key={t.id} className={cx("rounded-md px-4 py-3 text-sm shadow-lg border flex items-start gap-2",
+            t.type === "ok" ? "bg-white border-emerald-200 text-emerald-800" : "bg-white border-amber-200 text-amber-800")}>
+            {t.type === "ok" ? <CheckCircle2 size={16} className="shrink-0 mt-0.5" /> : <AlertTriangle size={16} className="shrink-0 mt-0.5" />}
+            <span>{t.message}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+
+try {
+  const root = ReactDOM.createRoot(document.getElementById('root'));
+  root.render(<App />);
+} catch (e) {
+  console.error(e);
+  document.getElementById('root').innerHTML =
+    '<pre style="white-space:pre-wrap;padding:16px;color:#7f1d1d;background:#fee2e2;font-family:ui-monospace,monospace;">' +
+    'App crashed while mounting:\n\n' + (e && e.stack ? e.stack : String(e)) +
+    '</pre>';
+}
+</script>
+
+<script>
+  // Manually transform the app source instead of using Babel's automatic
+  // <script type="text/babel"> scanner, so we can force the *classic* JSX
+  // runtime (React.createElement calls against the global `React`) rather
+  // than the *automatic* runtime, which newer Babel versions default to
+  // and which compiles to `import { jsx as _jsx } from "react/jsx-runtime"`
+  // — a real ES module import that a classic <script> can't execute, and
+  // the exact cause of the "Cannot use import statement outside a module"
+  // error.
+  try {
+    const source = document.getElementById('app-source').textContent;
+    const output = Babel.transform(source, {
+      presets: [['react', { runtime: 'classic' }]],
+    }).code;
+    const script = document.createElement('script');
+    script.text = output;
+    document.body.appendChild(script);
+  } catch (e) {
+    console.error(e);
+    document.getElementById('root').innerHTML =
+      '<pre style="white-space:pre-wrap;padding:16px;color:#7f1d1d;background:#fee2e2;font-family:ui-monospace,monospace;">' +
+      'Babel transform failed:\n\n' + (e && e.stack ? e.stack : String(e)) +
+      '</pre>';
+  }
+</script>
+</body>
+</html>
